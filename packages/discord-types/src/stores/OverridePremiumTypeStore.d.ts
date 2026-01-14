@@ -1,15 +1,16 @@
 import { FluxStore } from "..";
+import { PremiumType } from "../../enums";
 
-type State = {
+export interface OverridePremiumTypeState {
     createdAtOverride: Date | undefined;
-    premiumTypeActual: number;
-    premiumTypeOverride: number | undefined;
-};
+    premiumTypeActual: PremiumType | null;
+    premiumTypeOverride: PremiumType | undefined;
+}
 
 export class OverridePremiumTypeStore extends FluxStore {
-    getState(): State;
+    getState(): OverridePremiumTypeState;
     getCreatedAtOverride(): Date | undefined;
-    getPremiumTypeActual(): number;
-    getPremiumTypeOverride(): number | undefined;
-    get premiumType(): number;
+    getPremiumTypeActual(): PremiumType | null;
+    getPremiumTypeOverride(): PremiumType | undefined;
+    get premiumType(): PremiumType | undefined;
 }
