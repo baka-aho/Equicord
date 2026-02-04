@@ -10,13 +10,13 @@ import definePlugin from "@utils/types";
 export default definePlugin({
     name: "HeaderBarAPI",
     description: "API to add buttons to the header bar and channel toolbar.",
-    authors: [EquicordDevs.Prism],
+    authors: [EquicordDevs.prism],
 
     patches: [
         {
             find: '?"BACK_FORWARD_NAVIGATION":',
             replacement: {
-                match: /(?<=\i\.Fragment,\{children:\[.{1,500}className:\i\}\))(?=\])/,
+                match: /(?<="HELP".{0,150}className:\i\}\))(?=\])/,
                 replace: ",...Vencord.Api.HeaderBar._addHeaderBarButtons()"
             }
         },

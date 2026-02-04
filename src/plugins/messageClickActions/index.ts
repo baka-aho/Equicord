@@ -10,10 +10,10 @@ import NoReplyMentionPlugin from "@plugins/noReplyMention";
 import { Devs, EquicordDevs } from "@utils/constants";
 import { copyWithToast, insertTextIntoChatInputBox } from "@utils/discord";
 import { Logger } from "@utils/Logger";
-import definePlugin, { OptionType } from "@utils/types";
-import type { Message } from "@vencord/discord-types";
+import definePlugin, { makeRange, OptionType } from "@utils/types";
+import type { Channel, Message } from "@vencord/discord-types";
 import { ApplicationIntegrationType, MessageFlags } from "@vencord/discord-types/enums";
-import { AuthenticationStore, Constants, EditMessageStore, FluxDispatcher, MessageActions, MessageTypeSets, PermissionsBits, PermissionStore, PinActions, RestAPI, showToast, Toasts, WindowStore } from "@webpack/common";
+import { AuthenticationStore, Constants, EditMessageStore, FluxDispatcher, MessageActions, MessageTypeSets, PermissionsBits, PermissionStore, PinActions, RestAPI, Toasts, WindowStore } from "@webpack/common";
 
 type Modifier = "NONE" | "SHIFT" | "CTRL" | "ALT" | "BACKSPACE" | "DELETE";
 type ClickAction = "NONE" | "DELETE" | "COPY_LINK" | "COPY_ID" | "COPY_CONTENT" | "COPY_USER_ID" | "EDIT" | "REPLY" | "REACT" | "OPEN_THREAD" | "OPEN_TAB" | "EDIT_REPLY" | "QUOTE" | "PIN";
@@ -34,6 +34,7 @@ const actions: { label: string; value: ClickAction; }[] = [
 
 const doubleClickOwnActions: { label: string; value: ClickAction; }[] = [
     { label: "None", value: "NONE" },
+    { label: "Delete", value: "DELETE" },
     { label: "Reply", value: "REPLY" },
     { label: "Edit", value: "EDIT" },
     { label: "Quote", value: "QUOTE" },
@@ -47,6 +48,7 @@ const doubleClickOwnActions: { label: string; value: ClickAction; }[] = [
 
 const doubleClickOthersActions: { label: string; value: ClickAction; }[] = [
     { label: "None", value: "NONE" },
+    { label: "Delete", value: "DELETE" },
     { label: "Reply", value: "REPLY" },
     { label: "Quote", value: "QUOTE" },
     { label: "Copy Content", value: "COPY_CONTENT" },
@@ -91,7 +93,20 @@ const focusChanged = () => {
 
 let lastMouseDownTime = 0;
 const onMouseDown = () => {
-    lastMouseDownTime = Date.now();
+    const now = Date.now();
+
+    // TODO: this logic is messy but it works so eh
+    if (mouseDownCount >= 1 && now - lastMouseDownTime < settings.store.clickTimeout) {
+        if (singleClickTimeout) {
+            clearTimeout(singleClickTimeout);
+            singleClickTimeout = null;
+        }
+        doubleClickDetected = true;
+        secondMouseDownTime = now;
+    }
+
+    mouseDownCount++;
+    lastMouseDownTime = now;
 };
 
 function modifierFromKey(e: KeyboardEvent): Modifier | null {
@@ -102,12 +117,18 @@ function modifierFromKey(e: KeyboardEvent): Modifier | null {
 }
 
 function isModifierPressed(modifier: Modifier): boolean {
-    return modifier === "NONE" || pressedModifiers.has(modifier);
+    if (modifier === "NONE") return pressedModifiers.size === 0;
+    return pressedModifiers.has(modifier);
 }
 
 let doubleClickTimeout: ReturnType<typeof setTimeout> | null = null;
 let singleClickTimeout: ReturnType<typeof setTimeout> | null = null;
 let pendingDoubleClickAction: (() => void) | null = null;
+let doubleClickFired = false;
+
+let mouseDownCount = 0;
+let doubleClickDetected = false;
+let secondMouseDownTime = 0;
 
 const settings = definePluginSettings({
     reactEmoji: {
@@ -170,11 +191,19 @@ const settings = definePluginSettings({
     clickTimeout: {
         type: OptionType.NUMBER,
         description: "Timeout to distinguish double/triple clicks (ms)",
+        markers: makeRange(100, 500, 50),
         default: 300
+    },
+    doubleClickHoldThreshold: {
+        type: OptionType.NUMBER,
+        description: "Max hold time for double-click actions (ms). Holding longer allows text selection",
+        markers: makeRange(50, 500, 50),
+        default: 150
     },
     selectionHoldTimeout: {
         type: OptionType.NUMBER,
         description: "Timeout to allow text selection (ms)",
+        markers: makeRange(100, 1000, 100),
         default: 300
     },
     quoteWithReply: {
@@ -200,11 +229,20 @@ function showWarning(message: string) {
     });
 }
 
-function isMessageReplyable(msg: Message) {
-    return MessageTypeSets.REPLYABLE.has(msg.type) && !msg.hasFlag(MessageFlags.EPHEMERAL);
-}
+const canSend = (channel: Channel) =>
+    !channel.guild_id || PermissionStore.can(PermissionsBits.SEND_MESSAGES, channel);
 
-async function toggleReaction(channelId: string, messageId: string, emoji: string, channel: { id: string; guild_id?: string | null; }, msg: Message) {
+const canDelete = (msg: Message, channel: Channel) => {
+    const myId = AuthenticationStore.getId();
+    return msg.author.id === myId ||
+        PermissionStore.can(PermissionsBits.MANAGE_MESSAGES, channel) ||
+        msg.interactionMetadata?.authorizing_integration_owners?.[ApplicationIntegrationType.USER_INSTALL] === myId;
+};
+
+const canReply = (msg: Message) =>
+    MessageTypeSets.REPLYABLE.has(msg.type) && !msg.hasFlag(MessageFlags.EPHEMERAL);
+
+async function toggleReaction(channelId: string, messageId: string, emoji: string, channel: Channel, msg: Message) {
     const trimmed = emoji.trim();
     if (!trimmed) return;
 
@@ -240,37 +278,11 @@ async function toggleReaction(channelId: string, messageId: string, emoji: strin
     }
 }
 
-async function copyMessageLink(msg: Message, channel: { id: string; guild_id?: string | null; }) {
-    const guildId = channel.guild_id ?? "@me";
-    const link = `https://discord.com/channels/${guildId}/${channel.id}/${msg.id}`;
-
-    try {
-        await navigator.clipboard.writeText(link);
-        showToast("Message link copied", Toasts.Type.SUCCESS);
-    } catch (e) {
-        new Logger("MessageClickActions").error("Failed to copy link:", e);
-    }
+function copyLink(msg: Message, channel: Channel) {
+    copyWithToast(`https://discord.com/channels/${channel.guild_id ?? "@me"}/${channel.id}/${msg.id}`, "Link copied!");
 }
 
-async function copyMessageId(msg: Message) {
-    try {
-        await navigator.clipboard.writeText(msg.id);
-        showToast("Message ID copied", Toasts.Type.SUCCESS);
-    } catch (e) {
-        new Logger("MessageClickActions").error("Failed to copy message ID:", e);
-    }
-}
-
-async function copyUserId(msg: Message) {
-    try {
-        await navigator.clipboard.writeText(msg.author.id);
-        showToast("User ID copied", Toasts.Type.SUCCESS);
-    } catch (e) {
-        new Logger("MessageClickActions").error("Failed to copy user ID:", e);
-    }
-}
-
-function togglePin(channel: { id: string; }, msg: Message) {
+function togglePin(channel: Channel, msg: Message) {
     if (!PermissionStore.can(PermissionsBits.MANAGE_MESSAGES, channel)) {
         showWarning("Cannot pin: Missing permissions");
         return;
@@ -283,8 +295,8 @@ function togglePin(channel: { id: string; }, msg: Message) {
     }
 }
 
-function quoteMessage(channel: { id: string; guild_id?: string | null; isPrivate?: () => boolean; }, msg: Message) {
-    if (!isMessageReplyable(msg)) {
+function quoteMessage(channel: Channel, msg: Message) {
+    if (!canReply(msg)) {
         showWarning("Cannot quote this message type");
         return;
     }
@@ -313,13 +325,13 @@ function quoteMessage(channel: { id: string; guild_id?: string | null; isPrivate
     }
 }
 
-function openInNewTab(msg: Message, channel: { id: string; guild_id?: string | null; }) {
+function openInNewTab(msg: Message, channel: Channel) {
     const guildId = channel.guild_id ?? "@me";
     const link = `https://discord.com/channels/${guildId}/${channel.id}/${msg.id}`;
     VencordNative.native.openExternal(link);
 }
 
-function openInThread(msg: Message, channel: { id: string; }) {
+function openInThread(msg: Message, channel: Channel) {
     FluxDispatcher.dispatch({
         type: "OPEN_THREAD_FLOW_MODAL",
         channelId: channel.id,
@@ -330,16 +342,15 @@ function openInThread(msg: Message, channel: { id: string; }) {
 async function executeAction(
     action: ClickAction,
     msg: Message,
-    channel: { id: string; guild_id?: string | null; isDM?: () => boolean; isSystemDM?: () => boolean; isPrivate?: () => boolean; },
+    channel: Channel,
     event: MouseEvent
 ) {
     const myId = AuthenticationStore.getId();
     const isMe = msg.author.id === myId;
-    const isSelfInvokedUserApp = msg.interactionMetadata?.authorizing_integration_owners?.[ApplicationIntegrationType.USER_INSTALL] === myId;
 
     switch (action) {
         case "DELETE":
-            if (!(isMe || PermissionStore.can(PermissionsBits.MANAGE_MESSAGES, channel) || isSelfInvokedUserApp)) return;
+            if (!canDelete(msg, channel)) return;
 
             if (msg.deleted) {
                 FluxDispatcher.dispatch({
@@ -355,12 +366,12 @@ async function executeAction(
             break;
 
         case "COPY_LINK":
-            await copyMessageLink(msg, channel);
+            copyLink(msg, channel);
             event.preventDefault();
             break;
 
         case "COPY_ID":
-            await copyMessageId(msg);
+            copyWithToast(msg.id, "Message ID copied!");
             event.preventDefault();
             break;
 
@@ -370,7 +381,7 @@ async function executeAction(
             break;
 
         case "COPY_USER_ID":
-            await copyUserId(msg);
+            copyWithToast(msg.author.id, "User ID copied!");
             event.preventDefault();
             break;
 
@@ -382,8 +393,8 @@ async function executeAction(
             break;
 
         case "REPLY":
-            if (!MessageTypeSets.REPLYABLE.has(msg.type) || msg.hasFlag(MessageFlags.EPHEMERAL)) return;
-            if (channel.guild_id && !PermissionStore.can(PermissionsBits.SEND_MESSAGES, channel)) return;
+            if (!canReply(msg)) return;
+            if (!canSend(channel)) return;
 
             const isShiftPress = event.shiftKey;
             const shouldMention = isPluginEnabled(NoReplyMentionPlugin.name)
@@ -405,8 +416,8 @@ async function executeAction(
                 if (EditMessageStore.isEditing(channel.id, msg.id) || msg.state !== "SENT") return;
                 MessageActions.startEditMessage(channel.id, msg.id, msg.content);
             } else {
-                if (!MessageTypeSets.REPLYABLE.has(msg.type) || msg.hasFlag(MessageFlags.EPHEMERAL)) return;
-                if (channel.guild_id && !PermissionStore.can(PermissionsBits.SEND_MESSAGES, channel)) return;
+                if (!canReply(msg)) return;
+                if (!canSend(channel)) return;
 
                 const shouldMentionReply = isPluginEnabled(NoReplyMentionPlugin.name)
                     ? NoReplyMentionPlugin.shouldMention(msg, false)
@@ -483,12 +494,14 @@ export default definePlugin({
             singleClickTimeout = null;
         }
         pendingDoubleClickAction = null;
+        mouseDownCount = 0;
+        doubleClickDetected = false;
+        secondMouseDownTime = 0;
     },
 
     onMessageClick(msg, channel, event) {
-        const target = event.target as HTMLElement;
-        if (target.closest('a, button, input, img, [class*="repliedTextPreview"], [class*="threadMessageAccessory"]')) return;
-        if (!target.closest('[class*="message"]')) return;
+        let target = event.target as HTMLElement;
+        if (target.nodeType === Node.TEXT_NODE) target = target.parentElement as HTMLElement;
 
         const myId = AuthenticationStore.getId();
         const isMe = msg.author.id === myId;
@@ -511,6 +524,14 @@ export default definePlugin({
         const isDoubleClick = event.detail === 2;
         const isTripleClick = event.detail === 3;
 
+        if (Date.now() - lastMouseDownTime > settings.store.selectionHoldTimeout) {
+            pressedModifiers.clear();
+            mouseDownCount = 0;
+            doubleClickDetected = false;
+            secondMouseDownTime = 0;
+            return;
+        }
+
         if (singleClickTimeout) {
             clearTimeout(singleClickTimeout);
             singleClickTimeout = null;
@@ -525,7 +546,12 @@ export default definePlugin({
 
             if (isModifierPressed(tripleClickModifier) && tripleClickAction !== "NONE") {
                 executeAction(tripleClickAction, msg, channel, event);
+                pressedModifiers.clear();
             }
+            doubleClickFired = false;
+            mouseDownCount = 0;
+            doubleClickDetected = false;
+            secondMouseDownTime = 0;
             return;
         }
 
@@ -533,22 +559,24 @@ export default definePlugin({
         const canTripleClick = isModifierPressed(tripleClickModifier) && tripleClickAction !== "NONE";
 
         if (isDoubleClick) {
+            doubleClickFired = true;
+
             if (singleClickTimeout) {
                 clearTimeout(singleClickTimeout);
                 singleClickTimeout = null;
             }
 
-            if (Date.now() - lastMouseDownTime > settings.store.selectionHoldTimeout) return;
-
+            const isQuickDoubleClick = !doubleClickDetected || (Date.now() - secondMouseDownTime < settings.store.doubleClickHoldThreshold);
             const executeDoubleClick = () => {
-                if (channel.guild_id && !PermissionStore.can(PermissionsBits.SEND_MESSAGES, channel)) return;
+                if (!canSend(channel)) return;
                 if (msg.deleted === true) return;
-                if (canDoubleClick) {
+                if (canDoubleClick && isQuickDoubleClick) {
                     executeAction(doubleClickAction, msg, channel, event);
+                    pressedModifiers.clear();
                 }
             };
 
-            if (canTripleClick) {
+            if (canTripleClick && canDoubleClick) {
                 if (doubleClickTimeout) {
                     clearTimeout(doubleClickTimeout);
                 }
@@ -561,18 +589,32 @@ export default definePlugin({
             } else {
                 executeDoubleClick();
             }
-            event.preventDefault();
+
+            if (isQuickDoubleClick) {
+                event.preventDefault();
+            }
+
+            mouseDownCount = 0;
+            doubleClickDetected = false;
+            secondMouseDownTime = 0;
             return;
         }
 
         if (isSingleClick) {
+            doubleClickFired = false;
+
             const executeSingleClick = () => {
-                if (isModifierPressed(singleClickModifier) && singleClickAction !== "NONE") {
+                if (!doubleClickFired && !doubleClickDetected && isModifierPressed(singleClickModifier) && singleClickAction !== "NONE") {
                     executeAction(singleClickAction, msg, channel, event);
+                    pressedModifiers.clear();
                 }
+                mouseDownCount = 0;
+                doubleClickDetected = false;
+                secondMouseDownTime = 0;
             };
 
-            if (canDoubleClick) {
+            const hasDoubleClickAction = settings.store.doubleClickAction !== "NONE" || settings.store.doubleClickOthersAction !== "NONE";
+            if (hasDoubleClickAction && singleClickModifier === "NONE") {
                 singleClickTimeout = setTimeout(() => {
                     executeSingleClick();
                     singleClickTimeout = null;

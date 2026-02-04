@@ -83,8 +83,9 @@ const settings = definePluginSettings({
     },
     whitelistedLoggers: {
         type: OptionType.STRING,
-        description: "Semi colon separated list of loggers to allow even if others are hidden",
+        description: "Semicolon (;) separated list of loggers to allow even if others are hidden",
         default: "GatewaySocket; Routing/Utils",
+        multiline: true,
         onChange(newVal: string) {
             logAllow.clear();
             newVal.split(";").map(x => x.trim()).forEach(logAllow.add.bind(logAllow));
@@ -191,13 +192,6 @@ export default definePlugin({
             find: "Slow dispatch on",
             replacement: {
                 match: /\i\.totalTime>\i&&\i\.verbose\("Slow dispatch on ".+?\)\);/,
-                replace: ""
-            }
-        },
-        {
-            find: "JANK loaded src",
-            replacement: {
-                match: /console.log\("JANK loaded src "\.concat\(\i," as data URI or isImageLoaded"\)\),/,
                 replace: ""
             }
         },
