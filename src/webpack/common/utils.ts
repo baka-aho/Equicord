@@ -142,7 +142,7 @@ export const UserUtils = {
 
 export const UploadManager = findByPropsLazy("clearAll", "addFile");
 export const UploadHandler = {
-    promptToUpload: findByCodeLazy("Unexpected mismatch between files and file metadata") as (files: File[], channel: t.Channel, draftType: Number) => void
+    promptToUpload: findByCodeLazy("Unexpected mismatch between files and file metadata") as (files: File[], channel: t.Channel, draftType: Number) => Promise<void>
 };
 
 export const ApplicationAssetUtils = mapMangledModuleLazy("getAssetImage: size must === [", {
@@ -190,6 +190,28 @@ export const PinActions = findByPropsLazy("pinMessage", "unpinMessage");
 
 export const IconUtils: t.IconUtils = findByPropsLazy("getGuildBannerURL", "getUserAvatarURL");
 
+export const ColorUtils = mapMangledModuleLazy("Invalid hex color format", {
+    rgbToHex: filters.byCode(".toString(16).slice(1)"),
+    hexToRgba: filters.byCode("rgba(", "??"),
+    hexToRgb: filters.byCode(".rgb();return"),
+    rgbToHsl: filters.byCode("saturation:", "lightness:"),
+    mixColors: filters.byCode(".substring(1,3),16)"),
+    hexWithAlpha: filters.byCode("Invalid hex color format"),
+    getDominantColor: filters.byCode("hex:", "hsv:"),
+    generatePalette: filters.byCode("360/("),
+});
+
+export const ImageUtils = mapMangledModuleLazy("Input data is not a valid image.", {
+    extractColors: filters.byCode('"number"==typeof'),
+    fileToDataURL: filters.byCode("Result must be a string"),
+    dataURLToBlob: filters.byCode("new Uint8Array("),
+    dataURLToFile: filters.byCode("new File(["),
+    fitDimensions: filters.byCode("minWidth:", "minHeight:"),
+    loadImage: filters.byCode('addEventListener("load"'),
+    isAnimatedPNG: filters.byCode("File is not a PNG"),
+    base64Size: filters.byCode("Input data is not a valid image."),
+});
+
 export const ReadStateUtils = mapMangledModuleLazy('type:"ENABLE_AUTOMATIC_ACK",', {
     ackChannel: filters.byCode(".isForumLikeChannel(")
 });
@@ -228,3 +250,7 @@ export const MessageTypeSets: t.MessageTypeSets = findByPropsLazy("REPLYABLE", "
 export const fetchApplicationsRPC = findByCodeLazy('"Invalid Origin"', ".application");
 
 export const CloudUploader = findLazy(m => m.prototype?.trackUploadFinished) as typeof t.CloudUpload;
+
+export const URLUtils: t.URLUtils = findByPropsLazy("URL_REGEX", "makeUrl", "isDiscordUrl");
+export const Humanize: t.Humanize = findByPropsLazy("filesize", "relativeTime", "ordinal");
+export const EmojiUtils: t.EmojiUtils = findByPropsLazy("getEmojiColors", "getURL");
